@@ -882,41 +882,101 @@ function openSettings(){
   openSheet('Settings',body);
 }
 
+// ── Notification system ──────────────────────────────────────────────────────
+// Uses page-side scheduling: on each app open, we check if a notification
+// should fire today and schedule it via setTimeout for the current session.
+// This is more reliable on Android than SW setTimeout (SW gets killed).
+// The SW is still used to actually display the notification so it shows
+// even if the user backgrounds the app mid-session.
+
+var notifTimers=[];
+
 function toggleNotif(){
-  if(!('Notification' in window)){ showFlash('Not supported'); return; }
+  if(!('Notification' in window)){ showFlash('Not supported on this browser'); return; }
   if(state.notif.enabled){
-    state.notif.enabled=false; saveState(); sendSwSchedule(); openSettings(); return;
+    state.notif.enabled=false;
+    saveState(); clearNotifTimers(); openSettings(); return;
   }
-  if(Notification.permission==='denied'){ showFlash('Enable in browser settings'); return; }
-  if(Notification.permission==='granted'){
-    state.notif.enabled=true; saveState(); sendSwSchedule(); openSettings(); return;
+  if(Notification.permission==='denied'){
+    showFlash('Blocked — enable in Chrome site settings'); return;
   }
-  Notification.requestPermission(function(perm){
-    if(perm==='granted'){ state.notif.enabled=true; saveState(); sendSwSchedule(); }
+  // Use Promise form (works on modern Android Chrome)
+  var req=Notification.requestPermission();
+  if(req && typeof req.then === 'function'){
+    req.then(function(perm){
+      if(perm==='granted'){
+        state.notif.enabled=true; saveState(); schedulePageNotifs();
+      } else {
+        showFlash('Permission denied');
+      }
+      openSettings();
+    });
+  } else {
+    // Fallback: permission was already handled synchronously
+    if(Notification.permission==='granted'){
+      state.notif.enabled=true; saveState(); schedulePageNotifs();
+    }
     openSettings();
-  });
+  }
 }
 
 function saveNotifTimes(){
   var m=document.getElementById('notif-morning'), e=document.getElementById('notif-evening');
   if(m){ var mp=m.value.split(':'); state.notif.morningHour=parseInt(mp[0])||8; state.notif.morningMin=parseInt(mp[1])||0; }
   if(e){ var ep=e.value.split(':'); state.notif.eveningHour=parseInt(ep[0])||19; state.notif.eveningMin=parseInt(ep[1])||0; }
-  saveState(); sendSwSchedule();
+  saveState(); clearNotifTimers(); if(state.notif.enabled) schedulePageNotifs();
 }
 
-function sendSwSchedule(){
-  if(!('serviceWorker' in navigator)) return;
-  navigator.serviceWorker.ready.then(function(reg){
-    if(!reg.active) return;
-    if(state.notif.enabled){
-      reg.active.postMessage({type:'SCHEDULE',
-        morningHour:state.notif.morningHour, morningMin:state.notif.morningMin,
-        eveningHour:state.notif.eveningHour, eveningMin:state.notif.eveningMin});
-    } else {
-      reg.active.postMessage({type:'CANCEL'});
-    }
-  });
+function clearNotifTimers(){
+  for(var i=0;i<notifTimers.length;i++) clearTimeout(notifTimers[i]);
+  notifTimers=[];
 }
+
+function msUntil(hour, min){
+  var now=new Date(), target=new Date();
+  target.setHours(hour, min, 0, 0);
+  if(target<=now) return -1; // already passed today
+  return target-now;
+}
+
+function getPendingLabels(){
+  return state.tasks.filter(function(t){
+    return t.freq==='daily' && isActiveToday(t) && !state.completions[ck(t.id,'daily')];
+  }).map(function(t){ return t.label; });
+}
+
+function fireNotification(slot){
+  if(!state.notif.enabled) return;
+  if(Notification.permission!=='granted') return;
+  var pending=getPendingLabels();
+  var body;
+  if(pending.length===0) body=slot==='morning'?'Open the app to plan your day.':'Great work — all done today!';
+  else if(pending.length===1) body='Still to do: '+pending[0];
+  else { var preview=pending.slice(0,3).join(', '); body='Still to do: '+preview+(pending.length>3?' +'+( pending.length-3)+' more':''); }
+
+  // Try via SW first (shows even when app is backgrounded)
+  if('serviceWorker' in navigator && navigator.serviceWorker.controller){
+    navigator.serviceWorker.controller.postMessage({
+      type:'SHOW_NOTIF', title:'Daily System', body:body, tag:'ds-'+slot
+    });
+  } else {
+    // Direct fallback (only works if app is in foreground)
+    try{ new Notification('Daily System',{body:body,tag:'ds-'+slot}); }catch(e){}
+  }
+}
+
+function schedulePageNotifs(){
+  clearNotifTimers();
+  if(!state.notif.enabled) return;
+  var n=state.notif;
+  var mMs=msUntil(n.morningHour, n.morningMin);
+  var eMs=msUntil(n.eveningHour, n.eveningMin);
+  if(mMs>0) notifTimers.push(setTimeout(function(){ fireNotification('morning'); },mMs));
+  if(eMs>0) notifTimers.push(setTimeout(function(){ fireNotification('evening'); },eMs));
+}
+
+// Legacy — kept so SW message listener still works
+function sendSwSchedule(){}
 
 // ── Cat modal ─────────────────────────────────────────────────────────────────
 var CF={label:'',color:PALETTE[0]}, CM='add', CID=null;
@@ -1193,6 +1253,7 @@ function gistPull(){
 loadState();
 doRollover();
 render();
+if(state.notif && state.notif.enabled) schedulePageNotifs();
 </script>
 </body>
 </html>
