@@ -219,7 +219,15 @@
     .toggle.on::after{transform:translateX(16px);}
     .notif-status{font-size:12px;color:#BBBAB6;padding:10px 0;}
 
-    /* Flash */
+    /* Data / Gist */
+    .data-btn-row{display:flex;gap:8px;margin-top:8px;}
+    .data-btn{flex:1;background:#EEECEA;border:none;border-radius:8px;padding:11px 0;font-size:13px;font-family:'DM Sans',sans-serif;color:#1A1A1A;cursor:pointer;text-align:center;}
+    .data-btn.warn{color:#922B21;}
+    .gist-status{font-size:12px;margin-top:8px;padding:6px 0;color:#BBBAB6;min-height:20px;}
+    .gist-status.ok{color:#2D5A27;}
+    .gist-status.err{color:#922B21;}
+
+        /* Flash */
     #flash{position:fixed;bottom:28px;left:50%;transform:translateX(-50%) translateY(12px);opacity:0;transition:all 0.2s ease;background:#1A1A1A;color:#F8F7F4;padding:9px 20px;border-radius:20px;font-size:13px;pointer-events:none;white-space:nowrap;z-index:200;}
     #flash.show{opacity:1;transform:translateX(-50%) translateY(0);}
   </style>
@@ -847,10 +855,28 @@ function openSettings(){
     return '<div class="how-item"><div class="how-title">'+item[0]+'</div><div class="how-text">'+item[1]+'</div></div>';
   }).join('');
 
+  var creds=getGistCreds();
+  var dataHTML='<div class="data-btn-row">'+
+    '<button class="data-btn" onclick="exportData()">⬇ Export backup</button>'+
+    '<button class="data-btn" onclick="importData()">⬆ Import backup</button>'+
+  '</div>'+
+  '<div style="font-size:12px;color:#BBBAB6;margin-top:8px">Downloads / restores a JSON file. Keep it in a safe place.</div>';
+
+  var gistHTML=''+
+    '<input class="field" id="gist-token" placeholder="GitHub personal access token (gist scope)" value="'+esc(creds.token)+'" style="margin-top:8px;font-size:12px"/>'+
+    '<input class="field" id="gist-id" placeholder="Gist ID (auto-filled after first push)" value="'+esc(creds.gistId)+'" style="font-size:12px"/>'+
+    '<div class="data-btn-row">'+
+      '<button class="data-btn" onclick="gistPush()">↑ Push to Gist</button>'+
+      '<button class="data-btn" onclick="gistPull()">↓ Pull from Gist</button>'+
+    '</div>'+
+    '<div class="gist-status" id="gist-status">Enter a token with <em>gist</em> scope from github.com/settings/tokens</div>';
+
   var body='<div class="settings-section">'+
     '<div class="settings-section-head"><span class="sec-label">Categories</span>'+
     '<button class="sec-add" onclick="openCatModal(null)">+</button></div>'+catsHTML+'</div>'+
     '<div class="settings-section"><div class="sec-label" style="margin-bottom:8px">Notifications</div>'+notifHTML+'</div>'+
+    '<div class="settings-section"><div class="sec-label" style="margin-bottom:8px">Backup &amp; restore</div>'+dataHTML+'</div>'+
+    '<div class="settings-section"><div class="sec-label" style="margin-bottom:8px">Gist sync</div>'+gistHTML+'</div>'+
     '<div class="settings-section"><div class="sec-label" style="margin-bottom:12px">How it works</div>'+howItems+'</div>'+
     '<button class="btn-ghost btn-full" onclick="closeSheet()">Done</button>';
   openSheet('Settings',body);
@@ -1054,6 +1080,113 @@ if('serviceWorker' in navigator){
       }catch(err){}
     }
   });
+}
+
+
+// ── Export / Import ───────────────────────────────────────────────────────────
+function exportData(){
+  var json=JSON.stringify(state, null, 2);
+  var blob=new Blob([json],{type:'application/json'});
+  var url=URL.createObjectURL(blob);
+  var a=document.createElement('a');
+  var d=new Date().toISOString().slice(0,10);
+  a.href=url; a.download='dailies-backup-'+d+'.json';
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a); URL.revokeObjectURL(url);
+  showFlash('Backup downloaded');
+}
+
+function importData(){
+  var input=document.createElement('input');
+  input.type='file'; input.accept='.json,application/json';
+  input.onchange=function(e){
+    var file=e.target.files[0]; if(!file) return;
+    var reader=new FileReader();
+    reader.onload=function(ev){
+      try{
+        var parsed=JSON.parse(ev.target.result);
+        if(!parsed.tasks||!parsed.cats){ showFlash('Invalid backup file'); return; }
+        parsed.tasks=(parsed.tasks||[]).map(function(t){return t.days?t:Object.assign({days:[]},t);});
+        parsed.dailyCaps=parsed.dailyCaps||{};
+        parsed.notif=parsed.notif||{enabled:false,morningHour:8,morningMin:0,eveningHour:19,eveningMin:0};
+        state=parsed;
+        saveState(); render(); closeSheet();
+        showFlash('Data restored');
+      }catch(err){ showFlash('Could not read file'); }
+    };
+    reader.readAsText(file);
+  };
+  document.body.appendChild(input); input.click(); document.body.removeChild(input);
+}
+
+// ── Gist sync ─────────────────────────────────────────────────────────────────
+var GIST_TOKEN_KEY='ds_gist_token';
+var GIST_ID_KEY='ds_gist_id';
+
+function getGistCreds(){
+  return {
+    token: localStorage.getItem(GIST_TOKEN_KEY)||'',
+    gistId: localStorage.getItem(GIST_ID_KEY)||''
+  };
+}
+
+function saveGistCreds(){
+  var t=document.getElementById('gist-token'), g=document.getElementById('gist-id');
+  if(t) localStorage.setItem(GIST_TOKEN_KEY, t.value.trim());
+  if(g) localStorage.setItem(GIST_ID_KEY, g.value.trim());
+}
+
+function setGistStatus(msg, type){
+  var el=document.getElementById('gist-status');
+  if(!el) return;
+  el.textContent=msg;
+  el.className='gist-status'+(type?' '+type:'');
+}
+
+function gistPush(){
+  saveGistCreds();
+  var creds=getGistCreds();
+  if(!creds.token){ setGistStatus('Enter a GitHub token first','err'); return; }
+  setGistStatus('Saving…');
+  var payload={files:{'dailies-data.json':{content:JSON.stringify(state,null,2)}}};
+  var method=creds.gistId?'PATCH':'POST';
+  var url=creds.gistId?'https://api.github.com/gists/'+creds.gistId:'https://api.github.com/gists';
+  if(!creds.gistId) payload.description='Daily System backup'; payload.public=false;
+  fetch(url,{
+    method:method,
+    headers:{'Authorization':'token '+creds.token,'Content-Type':'application/json'},
+    body:JSON.stringify(payload)
+  }).then(function(r){ return r.json(); }).then(function(data){
+    if(data.id){
+      localStorage.setItem(GIST_ID_KEY, data.id);
+      var idEl=document.getElementById('gist-id'); if(idEl) idEl.value=data.id;
+      setGistStatus('Saved to Gist ✓','ok');
+    } else {
+      setGistStatus('Error: '+(data.message||'unknown'),'err');
+    }
+  }).catch(function(e){ setGistStatus('Network error','err'); });
+}
+
+function gistPull(){
+  saveGistCreds();
+  var creds=getGistCreds();
+  if(!creds.token||!creds.gistId){ setGistStatus('Enter token and Gist ID first','err'); return; }
+  setGistStatus('Loading…');
+  fetch('https://api.github.com/gists/'+creds.gistId,{
+    headers:{'Authorization':'token '+creds.token}
+  }).then(function(r){ return r.json(); }).then(function(data){
+    if(!data.files||!data.files['dailies-data.json']){ setGistStatus('File not found in Gist','err'); return; }
+    try{
+      var content=data.files['dailies-data.json'].content;
+      var parsed=JSON.parse(content);
+      if(!parsed.tasks||!parsed.cats){ setGistStatus('Invalid data in Gist','err'); return; }
+      parsed.tasks=(parsed.tasks||[]).map(function(t){return t.days?t:Object.assign({days:[]},t);});
+      parsed.dailyCaps=parsed.dailyCaps||{};
+      parsed.notif=parsed.notif||{enabled:false,morningHour:8,morningMin:0,eveningHour:19,eveningMin:0};
+      state=parsed; saveState(); render(); closeSheet();
+      showFlash('Data restored from Gist');
+    }catch(e){ setGistStatus('Could not parse Gist data','err'); }
+  }).catch(function(e){ setGistStatus('Network error','err'); });
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
