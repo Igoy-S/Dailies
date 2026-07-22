@@ -237,6 +237,7 @@
   <div id="topbar">
     <span id="topbar-title">Daily System</span>
     <div id="topbar-icons">
+      <span id="sync-indicator" title="Sync status" style="font-size:11px;color:#D0CEC9;letter-spacing:0.5px;"></span>
       <button id="btn-shop" title="Shop">◈</button>
       <button id="btn-review" title="Review">▤</button>
       <button id="btn-cal" title="Calendar">⊞</button>
@@ -444,23 +445,25 @@ function toggleTask(taskId){
   var key=ck(task.id,task.freq), was=!!state.completions[key];
   if(task.freq==='daily'&&!was){
     var today=todayStr(), cap=calcDailyCap(new Date()), earned=state.dailyCaps[today]||0;
-    if(cap>0&&earned>=cap){ showFlash('Daily point cap reached'); state.completions[key]=true; saveState(); render(); return; }
+    if(cap>0&&earned>=cap){ showFlash('Daily point cap reached'); state.completions[key]=true; saveState(); autoSync(); render(); return; }
     var award=cap>0?Math.min(task.pts,cap-earned):task.pts;
     state.completions[key]=true;
     state.dailyCaps[today]=(state.dailyCaps[today]||0)+award;
     state.rankXP+=award; state.spendablePts+=award;
     if(award>0) showFlash('+'+award+' pts');
+    autoSync();
   } else if(task.freq==='daily'&&was){
     delete state.completions[key];
     var today=todayStr();
     state.dailyCaps[today]=Math.max(0,(state.dailyCaps[today]||0)-task.pts);
     state.rankXP=Math.max(0,state.rankXP-task.pts);
     state.spendablePts=Math.max(0,state.spendablePts-task.pts);
+    autoSync();
   } else {
     if(was){ delete state.completions[key]; state.rankXP=Math.max(0,state.rankXP-task.pts); state.spendablePts=Math.max(0,state.spendablePts-task.pts); }
     else   { state.completions[key]=true; state.rankXP+=task.pts; state.spendablePts+=task.pts; if(task.pts)showFlash('+'+task.pts+' pts'); }
   }
-  saveState(); render();
+  saveState(); autoSync(); render();
 }
 
 // ── Task CRUD ─────────────────────────────────────────────────────────────────
@@ -473,11 +476,11 @@ function saveTask(form,mode,origId){
       return t.id===origId?{id:t.id,label:form.label,pts:form.pts,catId:form.catId,freq:form.freq,days:form.days,order:t.order}:t;
     });
   }
-  saveState(); closeSheet(); render();
+  saveState(); autoSync(); closeSheet(); render();
 }
 function deleteTask(id){
   state.tasks=state.tasks.filter(function(t){return t.id!==id;});
-  saveState(); closeSheet(); render();
+  saveState(); autoSync(); closeSheet(); render();
 }
 function moveTask(id,dir,freq){
   var grp=state.tasks.filter(function(t){return t.freq===freq;}).sort(function(a,b){return a.order-b.order;});
@@ -488,20 +491,20 @@ function moveTask(id,dir,freq){
   for(var i=0;i<grp.length;i++){
     for(var j=0;j<state.tasks.length;j++){if(state.tasks[j].id===grp[i].id){state.tasks[j].order=grp[i].order;break;}}
   }
-  saveState(); render();
+  saveState(); autoSync(); render();
 }
 
 // ── Cat CRUD ──────────────────────────────────────────────────────────────────
 function saveCat(form,mode,origId){
   if(mode==='add') state.cats.push({id:'cat_'+Date.now(),label:form.label,color:form.color});
   else state.cats=state.cats.map(function(c){return c.id===origId?{id:c.id,label:form.label,color:form.color}:c;});
-  saveState(); closeSheet(); openSettings();
+  saveState(); autoSync(); closeSheet(); openSettings();
 }
 function deleteCat(id){
   var fb=(state.cats.filter(function(c){return c.id!==id;})[0]||{}).id||'';
   state.cats=state.cats.filter(function(c){return c.id!==id;});
   state.tasks=state.tasks.map(function(t){return t.catId===id?Object.assign({},t,{catId:fb}):t;});
-  saveState(); closeSheet(); openSettings();
+  saveState(); autoSync(); closeSheet(); openSettings();
 }
 
 // ── Sheet ─────────────────────────────────────────────────────────────────────
@@ -627,7 +630,7 @@ function buyShield(){
   if(state.spendablePts<SHIELD_COST){showFlash('Not enough points');return;}
   if(state.shields>=3){showFlash('Already at max');return;}
   state.spendablePts-=SHIELD_COST; state.shields++;
-  saveState(); closeSheet(); render(); showFlash('Shield added');
+  saveState(); autoSync(); closeSheet(); render(); showFlash('Shield added');
 }
 
 // ── Review ────────────────────────────────────────────────────────────────────
@@ -862,14 +865,20 @@ function openSettings(){
   '</div>'+
   '<div style="font-size:12px;color:#BBBAB6;margin-top:8px">Downloads / restores a JSON file. Keep it in a safe place.</div>';
 
+  var gistConfigured=hasGistConfig();
   var gistHTML=''+
-    '<input class="field" id="gist-token" placeholder="GitHub personal access token (gist scope)" value="'+esc(creds.token)+'" style="margin-top:8px;font-size:12px"/>'+
+    '<div style="font-size:12px;color:#BBBAB6;margin-bottom:10px;line-height:1.6">'+
+      (gistConfigured
+        ? 'Auto-sync active. Data pushes 2s after each change. Pull to sync from another device.'
+        : 'One-time setup: enter a GitHub token with <strong>gist</strong> scope from github.com/settings/tokens, then push once to activate auto-sync.')+
+    '</div>'+
+    '<input class="field" id="gist-token" placeholder="GitHub token (gist scope)" value="'+esc(creds.token)+'" style="font-size:12px"/>'+
     '<input class="field" id="gist-id" placeholder="Gist ID (auto-filled after first push)" value="'+esc(creds.gistId)+'" style="font-size:12px"/>'+
     '<div class="data-btn-row">'+
-      '<button class="data-btn" onclick="gistPush()">↑ Push to Gist</button>'+
+      '<button class="data-btn" onclick="gistPush()">↑ '+(gistConfigured?'Push now':'Push & activate')+'</button>'+
       '<button class="data-btn" onclick="gistPull()">↓ Pull from Gist</button>'+
     '</div>'+
-    '<div class="gist-status" id="gist-status">Enter a token with <em>gist</em> scope from github.com/settings/tokens</div>';
+    '<div class="gist-status" id="gist-status">'+(gistConfigured?'Last sync: check ✓ indicator in top bar':'Not yet configured')+'</div>';
 
   var body='<div class="settings-section">'+
     '<div class="settings-section-head"><span class="sec-label">Categories</span>'+
@@ -1180,20 +1189,30 @@ function importData(){
 }
 
 // ── Gist sync ─────────────────────────────────────────────────────────────────
-var GIST_TOKEN_KEY='ds_gist_token';
-var GIST_ID_KEY='ds_gist_id';
+var GIST_TOKEN_KEY = 'ds_gist_token';
+var GIST_ID_KEY    = 'ds_gist_id';
+var GIST_SETUP_KEY = 'ds_gist_setup'; // 'done' once user has configured
+var gistDebounceTimer = null;
+var gistOnline = true;
+var gistPendingSync = false;
 
 function getGistCreds(){
   return {
-    token: localStorage.getItem(GIST_TOKEN_KEY)||'',
+    token:  localStorage.getItem(GIST_TOKEN_KEY)||'',
     gistId: localStorage.getItem(GIST_ID_KEY)||''
   };
 }
 
-function saveGistCreds(){
-  var t=document.getElementById('gist-token'), g=document.getElementById('gist-id');
-  if(t) localStorage.setItem(GIST_TOKEN_KEY, t.value.trim());
-  if(g) localStorage.setItem(GIST_ID_KEY, g.value.trim());
+function hasGistConfig(){
+  var c=getGistCreds();
+  return !!(c.token && c.gistId);
+}
+
+function setSyncIndicator(msg, color){
+  var el=document.getElementById('sync-indicator');
+  if(!el) return;
+  el.textContent=msg;
+  el.style.color=color||'#D0CEC9';
 }
 
 function setGistStatus(msg, type){
@@ -1203,15 +1222,57 @@ function setGistStatus(msg, type){
   el.className='gist-status'+(type?' '+type:'');
 }
 
-function gistPush(){
-  saveGistCreds();
+// Called after every state change — debounced 2s so bursts = one push
+function autoSync(){
+  if(!hasGistConfig()) return;
+  clearTimeout(gistDebounceTimer);
+  setSyncIndicator('…','#D0CEC9');
+  gistDebounceTimer=setTimeout(function(){
+    gistPushSilent();
+  }, 2000);
+}
+
+function gistPushSilent(){
   var creds=getGistCreds();
+  if(!creds.token) return;
+  var payload={files:{'dailies-data.json':{content:JSON.stringify(state,null,2)}}};
+  var method=creds.gistId?'PATCH':'POST';
+  var url=creds.gistId?'https://api.github.com/gists/'+creds.gistId:'https://api.github.com/gists';
+  if(!creds.gistId){ payload.description='Daily System backup'; payload.public=false; }
+  setSyncIndicator('↑','#D0CEC9');
+  fetch(url,{
+    method:method,
+    headers:{'Authorization':'token '+creds.token,'Content-Type':'application/json'},
+    body:JSON.stringify(payload)
+  }).then(function(r){ return r.json(); }).then(function(data){
+    if(data.id){
+      if(!creds.gistId) localStorage.setItem(GIST_ID_KEY, data.id);
+      gistOnline=true; gistPendingSync=false;
+      setSyncIndicator('✓','#2D5A27');
+      setTimeout(function(){ setSyncIndicator('',''); },3000);
+    } else {
+      throw new Error(data.message||'unknown');
+    }
+  }).catch(function(e){
+    gistOnline=false; gistPendingSync=true;
+    setSyncIndicator('○','#BBBAB6'); // offline indicator
+  });
+}
+
+// Manual push — used from settings panel or when coming back online
+function gistPush(){
+  var creds=getGistCreds();
+  // Save any values typed into settings fields
+  var t=document.getElementById('gist-token'), g=document.getElementById('gist-id');
+  if(t && t.value.trim()) localStorage.setItem(GIST_TOKEN_KEY, t.value.trim());
+  if(g && g.value.trim()) localStorage.setItem(GIST_ID_KEY, g.value.trim());
+  creds=getGistCreds();
   if(!creds.token){ setGistStatus('Enter a GitHub token first','err'); return; }
   setGistStatus('Saving…');
   var payload={files:{'dailies-data.json':{content:JSON.stringify(state,null,2)}}};
   var method=creds.gistId?'PATCH':'POST';
   var url=creds.gistId?'https://api.github.com/gists/'+creds.gistId:'https://api.github.com/gists';
-  if(!creds.gistId) payload.description='Daily System backup'; payload.public=false;
+  if(!creds.gistId){ payload.description='Daily System backup'; payload.public=false; }
   fetch(url,{
     method:method,
     headers:{'Authorization':'token '+creds.token,'Content-Type':'application/json'},
@@ -1219,16 +1280,22 @@ function gistPush(){
   }).then(function(r){ return r.json(); }).then(function(data){
     if(data.id){
       localStorage.setItem(GIST_ID_KEY, data.id);
+      localStorage.setItem(GIST_SETUP_KEY,'done');
       var idEl=document.getElementById('gist-id'); if(idEl) idEl.value=data.id;
-      setGistStatus('Saved to Gist ✓','ok');
+      gistOnline=true; gistPendingSync=false;
+      setSyncIndicator('✓','#2D5A27');
+      setTimeout(function(){ setSyncIndicator('',''); },3000);
+      setGistStatus('Saved ✓ — auto-sync is now active','ok');
     } else {
       setGistStatus('Error: '+(data.message||'unknown'),'err');
     }
-  }).catch(function(e){ setGistStatus('Network error','err'); });
+  }).catch(function(e){ setGistStatus('Network error — saved locally','err'); });
 }
 
 function gistPull(){
-  saveGistCreds();
+  var t=document.getElementById('gist-token'), g=document.getElementById('gist-id');
+  if(t && t.value.trim()) localStorage.setItem(GIST_TOKEN_KEY, t.value.trim());
+  if(g && g.value.trim()) localStorage.setItem(GIST_ID_KEY, g.value.trim());
   var creds=getGistCreds();
   if(!creds.token||!creds.gistId){ setGistStatus('Enter token and Gist ID first','err'); return; }
   setGistStatus('Loading…');
@@ -1237,23 +1304,63 @@ function gistPull(){
   }).then(function(r){ return r.json(); }).then(function(data){
     if(!data.files||!data.files['dailies-data.json']){ setGistStatus('File not found in Gist','err'); return; }
     try{
-      var content=data.files['dailies-data.json'].content;
-      var parsed=JSON.parse(content);
+      var parsed=JSON.parse(data.files['dailies-data.json'].content);
       if(!parsed.tasks||!parsed.cats){ setGistStatus('Invalid data in Gist','err'); return; }
       parsed.tasks=(parsed.tasks||[]).map(function(t){return t.days?t:Object.assign({days:[]},t);});
       parsed.dailyCaps=parsed.dailyCaps||{};
       parsed.notif=parsed.notif||{enabled:false,morningHour:8,morningMin:0,eveningHour:19,eveningMin:0};
       state=parsed; saveState(); render(); closeSheet();
-      showFlash('Data restored from Gist');
+      localStorage.setItem(GIST_SETUP_KEY,'done');
+      showFlash('Restored from Gist');
     }catch(e){ setGistStatus('Could not parse Gist data','err'); }
   }).catch(function(e){ setGistStatus('Network error','err'); });
 }
+
+// On app load — pull from Gist if configured, otherwise show setup prompt
+function initGistSync(){
+  var creds=getGistCreds();
+  if(!creds.token || !creds.gistId) return; // not configured yet
+  // Silently pull latest on load to catch up with any other device
+  setSyncIndicator('↓','#D0CEC9');
+  fetch('https://api.github.com/gists/'+creds.gistId,{
+    headers:{'Authorization':'token '+creds.token}
+  }).then(function(r){ return r.json(); }).then(function(data){
+    if(!data.files||!data.files['dailies-data.json']){
+      setSyncIndicator('',''); return;
+    }
+    var parsed=JSON.parse(data.files['dailies-data.json'].content);
+    if(!parsed.tasks||!parsed.cats){ setSyncIndicator('',''); return; }
+    parsed.tasks=(parsed.tasks||[]).map(function(t){return t.days?t:Object.assign({days:[]},t);});
+    parsed.dailyCaps=parsed.dailyCaps||{};
+    parsed.notif=parsed.notif||{enabled:false,morningHour:8,morningMin:0,eveningHour:19,eveningMin:0};
+    // Only overwrite if Gist is newer (has more history entries or higher rankXP)
+    if(parsed.history && parsed.history.length >= (state.history||[]).length){
+      state=parsed; saveState(); render();
+    }
+    setSyncIndicator('✓','#2D5A27');
+    setTimeout(function(){ setSyncIndicator('',''); },2000);
+  }).catch(function(e){
+    gistOnline=false;
+    setSyncIndicator('○','#BBBAB6');
+  });
+}
+
+// Watch for coming back online
+window.addEventListener('online', function(){
+  gistOnline=true;
+  if(gistPendingSync){ gistPushSilent(); }
+});
+window.addEventListener('offline', function(){
+  gistOnline=false;
+  setSyncIndicator('○','#BBBAB6');
+});
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 loadState();
 doRollover();
 render();
 if(state.notif && state.notif.enabled) schedulePageNotifs();
+initGistSync();
 </script>
 </body>
 </html>
